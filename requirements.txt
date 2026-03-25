@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+transformers
+torch==2.0.1
+sentencepiece
+accelerate
