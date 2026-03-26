@@ -1,6 +1,6 @@
 fastapi==0.111.0
 uvicorn==0.30.1
-transformers==4.40.2
+transformers==4.35.2   # was 4.40.2
 torch==2.0.1
 sentencepiece==0.2.0
 accelerate==0.30.1
