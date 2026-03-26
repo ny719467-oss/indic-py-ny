@@ -10,7 +10,7 @@ app = FastAPI()
 API_KEY = os.getenv("API_KEY", "defaultkey")
 
 # 🔐 Hugging Face Token (IMPORTANT for gated model)
-HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+HF_TOKEN = os.getenv("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")
 
 if not HF_TOKEN:
     raise ValueError("❌ Hugging Face token not found. Set HUGGINGFACEHUB_API_TOKEN")
