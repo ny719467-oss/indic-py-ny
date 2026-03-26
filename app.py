@@ -1,37 +1,40 @@
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-from IndicTransToolkit import IndicTransProcessor
+from IndicTransToolkit import IndicProcessor  # Fix 2: Correct class name (was IndicTransProcessor)
 from fastapi.middleware.cors import CORSMiddleware
 import torch
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
-# ✅ Fix 5: Validate API key is not the default insecure value at startup
-API_KEY = os.getenv("INDIC_API", "indicapikey20052026nitinnitin")
-if API_KEY == "defaultkey":
-    raise ValueError("❌ Set a real API_KEY in environment variables. Do not use 'defaultkey' in production.")
+# Fix 1: No hardcoded fallback — raises immediately if env var is missing
+API_KEY = os.getenv("INDIC_API")
+if not API_KEY:
+    raise ValueError("❌ Set INDIC_API in environment variables. No default is accepted.")
 
 # Hugging Face Token
 HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 if not HF_TOKEN:
     raise ValueError("❌ Hugging Face token not found. Set HUGGINGFACEHUB_API_TOKEN")
 
-# CORS
+# Fix 7: CORS — credentials require explicit origins, not wildcard
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Fix 3: Explicit device selection (GPU if available, else CPU)
+# Explicit device selection (GPU if available, else CPU)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🖥️  Using device: {DEVICE}")
 
-# ✅ Fix 4: Whitelist of valid IndicTrans2 language codes
+# Whitelist of valid IndicTrans2 language codes
 VALID_LANG_CODES = {
     "eng_Latn", "hin_Deva", "ben_Beng", "tam_Taml", "tel_Telu",
     "mar_Deva", "guj_Gujr", "kan_Knda", "mal_Mlym", "pan_Guru",
@@ -54,23 +57,58 @@ try:
         trust_remote_code=True,
         low_cpu_mem_usage=True
     )
-    # ✅ Fix 3: Move model to correct device
     model = model.to(DEVICE)
     model.eval()
 
-    # ✅ Fix 1 & 2: Initialize IndicTransToolkit processor
-    processor = IndicTransProcessor(quantization=None)
+    # Fix 2 & 3: Correct class + correct constructor signature
+    processor = IndicProcessor(inference_mode=True)
 
     print("✅ Model and processor loaded successfully")
 except Exception as e:
     print("❌ Model loading failed:", str(e))
     raise e
 
+# Fix 9: Thread pool for blocking model inference (keeps event loop free)
+executor = ThreadPoolExecutor(max_workers=2)
+
 
 class TranslationRequest(BaseModel):
     text: str
     source_lang: str
     target_lang: str
+
+
+def run_translation(text: str, source_lang: str, target_lang: str) -> str:
+    """Blocking translation logic — runs in thread pool."""
+    # Fix 3: Correct call signature for preprocess_batch
+    batch = processor.preprocess_batch(
+        [text],
+        src_lang=source_lang,
+        tgt_lang=target_lang,
+    )
+
+    inputs = tokenizer(
+        batch,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=256,
+    )
+
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_length=256,
+            num_beams=5,
+            early_stopping=True,
+        )
+
+    decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+    # Fix 3: Correct postprocess_batch call
+    translated_texts = processor.postprocess_batch(decoded, lang=target_lang)
+    return translated_texts[0]
 
 
 @app.get("/")
@@ -84,19 +122,19 @@ def health():
 
 
 @app.post("/translate")
-def translate(req: TranslationRequest, x_api_key: str = Header(None)):
-    # ✅ Fix 5: Secure API key check
+async def translate(req: TranslationRequest, x_api_key: str = Header(None)):
+    # Secure API key check
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Empty text not allowed")
 
-    # ✅ Fix 6: Request length guard to prevent OOM / timeouts
+    # Request length guard to prevent OOM / timeouts
     if len(req.text) > 1000:
         raise HTTPException(status_code=400, detail="Text too long. Maximum allowed length is 1000 characters.")
 
-    # ✅ Fix 4: Validate language codes against whitelist
+    # Validate language codes against whitelist
     if req.source_lang not in VALID_LANG_CODES:
         raise HTTPException(
             status_code=400,
@@ -109,37 +147,15 @@ def translate(req: TranslationRequest, x_api_key: str = Header(None)):
         )
 
     try:
-        # ✅ Fix 1 & 2: Use IndicTransToolkit processor for correct preprocessing
-        batch = processor.preprocess_batch(
-            [req.text],
-            src_lang=req.source_lang,
-            tgt_lang=req.target_lang,
+        # Fix 9: Run blocking inference in thread pool with a timeout
+        loop = asyncio.get_event_loop()
+        translated = await asyncio.wait_for(
+            loop.run_in_executor(executor, run_translation, req.text, req.source_lang, req.target_lang),
+            timeout=60.0  # 60-second max per request
         )
+        return {"translated_text": translated}
 
-        inputs = tokenizer(
-            batch,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=256,
-        )
-
-        # ✅ Fix 3: Move inputs to the same device as the model
-        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_length=256,
-                num_beams=5,
-                early_stopping=True,
-            )
-
-        # ✅ Fix 1 & 2: Use IndicTransToolkit processor for correct postprocessing
-        decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        translated_texts = processor.postprocess_batch(decoded, lang=req.target_lang)
-
-        return {"translated_text": translated_texts[0]}
-
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Translation timed out. Try a shorter input.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
