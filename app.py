@@ -9,7 +9,7 @@ import os
 app = FastAPI()
 
 # ✅ Fix 5: Validate API key is not the default insecure value at startup
-API_KEY = os.getenv("API_KEY", "defaultkey")
+API_KEY = os.getenv("INDIC_API", "indicapikey20052026nitinnitin")
 if API_KEY == "defaultkey":
     raise ValueError("❌ Set a real API_KEY in environment variables. Do not use 'defaultkey' in production.")
 
