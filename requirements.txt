@@ -1,8 +1,8 @@
-fastapi
-uvicorn
-transformers
+fastapi==0.111.0
+uvicorn==0.30.1
+transformers==4.40.2
 torch==2.0.1
-sentencepiece
-accelerate
-sacremoses
-IndicTransToolkit
+sentencepiece==0.2.0
+accelerate==0.30.1
+sacremoses==0.1.1
+IndicTransToolkit==0.1.1
